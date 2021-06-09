@@ -1,16 +1,17 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Windows.Input;
-using CsvHelper;
+﻿using CsvHelper;
 using Esri.ArcGISRuntime.Data;
 using Esri.ArcGISRuntime.Mapping;
 using EsriDe.RuntimeExplorer.CsvConverter;
+using EsriDe.RuntimeExplorer.Views;
 using GalaSoft.MvvmLight;
 using GalaSoft.MvvmLight.CommandWpf;
 using GalaSoft.MvvmLight.Ioc;
 using Microsoft.Win32;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Windows.Input;
 
 namespace EsriDe.RuntimeExplorer.ViewModel
 {
@@ -50,6 +51,9 @@ namespace EsriDe.RuntimeExplorer.ViewModel
                 {
                     if (args.PropertyName == nameof(MainDataViewModel.SelectedMapView))
                     {
+                        if (instance.SelectedMapView == null)
+                            return;
+                        
                         Map = instance.SelectedMapView.Map;
                         //der Wechsel einer Map innerhalb eines Tabs interessiert mich auch
                         instance.SelectedMapView.PropertyChanged += (sender1, args1) =>

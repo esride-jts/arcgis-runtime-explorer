@@ -1,17 +1,21 @@
+using Esri.ArcGISRuntime;
+using Esri.ArcGISRuntime.Mapping;
+using Esri.ArcGISRuntime.UI;
+using EsriDe.RuntimeExplorer.Events;
+using EsriDe.RuntimeExplorer.Theme;
+using EsriDe.RuntimeExplorer.Views;
+using GalaSoft.MvvmLight;
+using GalaSoft.MvvmLight.CommandWpf;
+using MahApps.Metro;
+using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
-using Esri.ArcGISRuntime.Mapping;
-using Esri.ArcGISRuntime.UI;
-using GalaSoft.MvvmLight;
-using GalaSoft.MvvmLight.CommandWpf;
-using Microsoft.Win32;
-using MahApps.Metro;
-using EsriDe.RuntimeExplorer.Theme;
-using System.Collections.Generic;
 using System.Windows.Media;
+
 //using MessageBox = Xceed.Wpf.Toolkit.MessageBox;
 
 namespace EsriDe.RuntimeExplorer.ViewModel
@@ -56,11 +60,22 @@ namespace EsriDe.RuntimeExplorer.ViewModel
             {
                 Debug.WriteLine("File open");
                 var dlg = new OpenFileDialog();
-                dlg.Filter =
-                    "ArcGIS Runtime Mobile Formats|*.mmpk;*.geodatabase|Mobile Map Packages (*.mmpk)|*.mmpk|Mobile Geodatabases (*.geodatabase)|*.geodatabase|All Files (*.*)|*.*";
+                dlg.Filter = string.Join("|", new[]
+                {
+                    "ArcGIS Runtime Mobile Formats|*.mmpk;*.geodatabase",
+                    "Mobile Map Packages|*.mmpk",
+                    "Unpacked Mobile Map Packages|*.info",
+                    "Mobile Geodatabases|*.geodatabase",
+                    "All Files|*.*"
+                });
                 if (dlg.ShowDialog() == true)
                 {
-                    FilePath = dlg.FileName;
+                    var selectedPath = dlg.FileName;
+                    if (selectedPath.EndsWith(".info"))
+                    {
+                        selectedPath = System.IO.Path.GetDirectoryName(selectedPath);
+                    }
+                    FilePath = selectedPath;
                 }
             });
 
@@ -111,27 +126,38 @@ namespace EsriDe.RuntimeExplorer.ViewModel
                     if (map != null)
                     {
                         map.Basemap = Basemap.CreateTopographic();
-                        if (map.SpatialReference != map.Basemap.BaseLayers.First().SpatialReference)
-                        {
-                            MessageBox.Show(
-                                "Basemap applied, but SpatialReference of current map differs from basemaps SpatialReference. Basemap is not visible.");
-                        }
+                        ValidateSpatialReference(map);
                     }
                 },
                 () => mainDataViewModel.SelectedMapView != null);
-            AddTpkBasemapCommand = new RelayCommand(() =>
+            AddFileBasemapCommand = new RelayCommand(() =>
             {
                 var dlg = new OpenFileDialog();
                 dlg.Filter =
-                    "ArcGIS Tile Package|*.tpk|All Files (*.*)|*.*";
+                    "ArcGIS Offline Basemap Packages|*.tpk;*.vtpk|ArcGIS Tile Package|*.tpk|ArcGIS Vector Tile Package|*.vtpk|All Files (*.*)|*.*";
                 if (dlg.ShowDialog() == true)
                 {
                     var map = mainDataViewModel?.SelectedMapView?.Map;
                     if (map != null)
                     {
-                        var tileCache = new TileCache(dlg.FileName);
-                        var tileLayer = new ArcGISTiledLayer(tileCache);
-                        map.Basemap = new Basemap(tileLayer);
+                        switch (System.IO.Path.GetExtension(dlg.FileName).ToLower())
+                        {
+                            case ".tpk":
+                                var tileCache = new TileCache(dlg.FileName);
+                                var tileLayer = new ArcGISTiledLayer(tileCache);
+                                map.Basemap = new Basemap(tileLayer);
+                                ValidateSpatialReference(map);
+                                break;
+                            case ".vtpk":
+                                //var vectorTileCache = new Esri.ArcGISRuntime.Mapping.VectorTileCache()
+                                var vectorTileLayer = new ArcGISVectorTiledLayer(new Uri(dlg.FileName));
+                                map.Basemap = new Basemap(vectorTileLayer);
+                                ValidateSpatialReference(map);
+                                break;
+                            default:
+                                break;
+                        }
+
                     }
                 }
             },
@@ -146,18 +172,73 @@ namespace EsriDe.RuntimeExplorer.ViewModel
             ToggleLayerExtentGraphicsVisibility = new RelayCommand(() =>
             {
                 LayerExtentGraphicsVisible = !LayerExtentGraphicsVisible;
-                mainDataViewModel.SelectedMapView.LayerExtentGraphicsVisible = LayerExtentGraphicsVisible;
+                if (mainDataViewModel.SelectedMapView != null)
+                    mainDataViewModel.SelectedMapView.LayerExtentGraphicsVisible = LayerExtentGraphicsVisible;
             });
+
+            ToggleBookmarkExtentGraphicsVisibility = new RelayCommand(() =>
+            {
+                BookmarkExtentGraphicsVisible = !BookmarkExtentGraphicsVisible;
+                if (mainDataViewModel.SelectedMapView != null)
+                    mainDataViewModel.SelectedMapView.BookmarkExtentGraphicsVisible = BookmarkExtentGraphicsVisible;
+            });
+
+            ZoomToLayerCommand = new RelayCommand(async () =>
+                {
+                    var mapView = mainDataViewModel?.SelectedMapView?.MapView;
+                    if (mapView != null)
+                    {
+                        var extent = mainDataViewModel.SelectedMapView.SelectedLayer.FullExtent;
+                        await mapView.SetViewpointAsync(new Viewpoint(extent));
+                    }
+
+                },
+                () => mainDataViewModel?.SelectedMapView?.SelectedLayer != null);
 
             PropertyChanged += (sender, args) =>
             {
-                mainDataViewModel.FilePath = FilePath;
+                if (args.PropertyName == nameof(FilePath))
+                {
+                    mainDataViewModel.FilePath = FilePath;
+                }
                 if (args.PropertyName == nameof(MapDrawStatus))
                 {
                     AppStatus = MapDrawStatus.ToString();
                 }
             };
 
+        }
+
+        private static void ValidateSpatialReference(Map map)
+        {
+            var baseLayer = map.Basemap.BaseLayers.FirstOrDefault();
+            if (baseLayer.LoadStatus != LoadStatus.Loaded)
+            {
+                baseLayer.Loaded += (sender, args) => BaseLayerOnLoaded(baseLayer, new MapEventArgs(map));
+            }
+            else
+            {
+                BaseLayerOnLoaded(baseLayer, new MapEventArgs(map));
+            }
+        }
+
+        private static void BaseLayerOnLoaded(object o, MapEventArgs args)
+        {
+            var layer = (o as Layer);
+            if (layer.LoadStatus == LoadStatus.Loaded)
+            {
+                var map = args.Map;
+                var mapRef = map.SpatialReference.BaseGeographic;
+                var baseLayer = map.Basemap.BaseLayers.FirstOrDefault();
+                var baseRef = baseLayer?.SpatialReference?.BaseGeographic;
+
+                if (mapRef != baseRef)
+                {
+                    MessageBox.Show(
+                        string.Format(Properties.Resources.ErrorSpatialReferencesDoNotMatch, mapRef.Wkid.ToString() ?? "empty", baseRef.Wkid.ToString() ?? "empty"),
+                        Properties.Resources.MessageBoxHint, MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
         }
 
         public List<AccentColorMenuData> AccentColors { get; set; }
@@ -197,6 +278,14 @@ namespace EsriDe.RuntimeExplorer.ViewModel
             set => Set(ref _layerExtentGraphicsVisible, value);
         }
 
+        private bool _bookmarkExtentGraphicsVisible = true;
+
+        public bool BookmarkExtentGraphicsVisible
+        {
+            get => _bookmarkExtentGraphicsVisible;
+            set => Set(ref _bookmarkExtentGraphicsVisible, value);
+        }
+
         public ICommand LayerDetailsCommand { get; private set; }
         public ICommand InspectMmpkCommand { get; private set; }
         public ICommand InspectGeodatabaseCommand { get; private set; }
@@ -204,8 +293,11 @@ namespace EsriDe.RuntimeExplorer.ViewModel
         public ICommand InspectLayerCommand { get; private set; }
         public ICommand InspectBackgroundGridCommand { get; private set; }
         public ICommand AddBasemapCommand { get; private set; }
-        public ICommand AddTpkBasemapCommand { get; private set; }
+        public ICommand AddFileBasemapCommand { get; private set; }
         public ICommand ShowAboutCommand { get; private set; }
         public ICommand ToggleLayerExtentGraphicsVisibility { get; private set; }
+        public ICommand ToggleBookmarkExtentGraphicsVisibility { get; private set; }
+        public ICommand ZoomToLayerCommand { get; private set; }
+        public ICommand IdentifyCommand { get; private set; }
     }
 }
